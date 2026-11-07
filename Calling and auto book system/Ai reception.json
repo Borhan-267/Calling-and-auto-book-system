@@ -1,0 +1,501 @@
+{
+  "name": "Ai reception",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "api/v1/operations/router",
+        "options": {}
+      },
+      "name": "Inbound Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -864,
+        432
+      ],
+      "id": "401491e1-5f0c-45f5-be3f-1df00165d51d",
+      "webhookId": "f6592aaf-2d17-47d1-9e29-65c4b3e83860"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalizes incoming payload variables across all 4 tiers\nconst body = $json.body || $json;\nreturn {\n  json: {\n    client_tier: body.tier || 4,\n    caller_name: body.name || \"John Doe\",\n    caller_phone: (body.phone || \"+15550199283\").replace(/[^+\\d]/g, ''),\n    service_address: body.address || \"123 Maple Street, Suite 4\",\n    issue_description: body.issue || \"Main water shutoff leaking\",\n    requested_time: body.datetime || new Date(Date.now() + 86400000).toISOString(),\n    job_id: \"JOB_\" + Math.floor(100000 + Math.random() * 900000)\n  }\n};"
+      },
+      "name": "Payload Normalizer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -640,
+        432
+      ],
+      "id": "1e119d8c-c166-4d29-9a62-fd1357670fd1"
+    },
+    {
+      "parameters": {},
+      "name": "Tier Switcher",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 2,
+      "position": [
+        -432,
+        432
+      ],
+      "id": "c5dbe5db-982d-4b9b-a07f-942f42f904bb"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO leads (job_id, name, phone, address, issue, status, created_at)\nVALUES ('{{ $json.job_id }}', '{{ $json.caller_name }}', '{{ $json.caller_phone }}', '{{ $json.service_address }}', '{{ $json.issue_description }}', 'lead_captured', NOW());",
+        "options": {}
+      },
+      "name": "T1: Save Lead to DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        -144,
+        160
+      ],
+      "id": "558f8842-6650-44ac-9298-8e4eaa2ee26f",
+      "credentials": {
+        "postgres": {
+          "id": "13YIMb1HnAA2o7El",
+          "name": "Postgres account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "-1001234567890",
+        "text": "=🚨 *NEW LEAD INGESTED (TIER 1)*\n\n👤 *Name:* {{ $json.caller_name }}\n📞 *Phone:* {{ $json.caller_phone }}\n📍 *Address:* {{ $json.service_address }}\n🔧 *Issue:* {{ $json.issue_description }}\n💾 *Status:* Recorded in Database",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "name": "T1: Owner Telegram Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [
+        80,
+        160
+      ],
+      "id": "6b8fe9a8-6b88-414f-b679-fc0c3af273b7",
+      "webhookId": "c59514c8-df3b-47f3-931a-22ce514033d2",
+      "credentials": {
+        "telegramApi": {
+          "id": "EOmamPcJKNx5kaIY",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://www.googleapis.com/calendar/v3/freeBusy",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"timeMin\": \"{{ $json.requested_time }}\",\n  \"timeMax\": \"{{ new Date(new Date($json.requested_time).getTime() + 3600000).toISOString() }}\",\n  \"items\": [{\"id\": \"primary\"}]\n}",
+        "options": {}
+      },
+      "name": "T2: GCal FreeBusy Check",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -144,
+        320
+      ],
+      "id": "c9ff6cfc-a993-4242-a053-ee553f2aef17"
+    },
+    {
+      "parameters": {
+        "calendar": "primary",
+        "start": "={{ $('Payload Normalizer').item.json.requested_time }}",
+        "end": "={{ new Date(new Date($('Payload Normalizer').item.json.requested_time).getTime() + 3600000).toISOString() }}",
+        "additionalFields": {
+          "description": "=Phone: {{ $('Payload Normalizer').item.json.caller_phone }}\nIssue: {{ $('Payload Normalizer').item.json.issue_description }}",
+          "location": "={{ $('Payload Normalizer').item.json.service_address }}",
+          "summary": "=[Service Call] - {{ $('Payload Normalizer').item.json.caller_name }}"
+        }
+      },
+      "name": "T2: Lock Calendar Slot",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.1,
+      "position": [
+        80,
+        320
+      ],
+      "id": "91d01ed2-7b48-4be9-87cf-8668dd4a3477"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telnyx.com/v2/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_TELNYX_API_KEY"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"from\": \"+15551234567\",\n  \"to\": \"{{ $('Payload Normalizer').item.json.caller_phone }}\",\n  \"text\": \"Hello {{ $('Payload Normalizer').item.json.caller_name }}, your service appointment is confirmed for {{ $('Payload Normalizer').item.json.requested_time }} at {{ $('Payload Normalizer').item.json.service_address }}.\"\n}",
+        "options": {}
+      },
+      "name": "T2: Confirmation SMS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        304,
+        320
+      ],
+      "id": "a04a66b2-97d7-49e4-b7e5-8d4d29839213"
+    },
+    {
+      "parameters": {
+        "chatId": "-1001234567890",
+        "text": "=📅 *DISPATCH CONFIRMED (TIER 2)*\n\n👤 *Client:* {{ $('Payload Normalizer').item.json.caller_name }}\n📞 *Phone:* {{ $('Payload Normalizer').item.json.caller_phone }}\n📍 *Address:* {{ $('Payload Normalizer').item.json.service_address }}\n⏰ *Time:* {{ $('Payload Normalizer').item.json.requested_time }}\n🔧 *Issue:* {{ $('Payload Normalizer').item.json.issue_description }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "name": "T2: Tech Dispatch Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [
+        528,
+        320
+      ],
+      "id": "787d3dba-6ca6-4ae6-a2d8-d432cf0fe514",
+      "webhookId": "52e716e4-7fa4-4453-b5b5-53909592f9a8",
+      "credentials": {
+        "telegramApi": {
+          "id": "EOmamPcJKNx5kaIY",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "calendar": "primary",
+        "start": "={{ $json.requested_time }}",
+        "end": "={{ new Date(new Date($json.requested_time).getTime() + 3600000).toISOString() }}",
+        "additionalFields": {
+          "location": "={{ $json.service_address }}",
+          "summary": "=[Tier 3 Booking] - {{ $json.caller_name }}"
+        }
+      },
+      "name": "T3: GCal Booking",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.1,
+      "position": [
+        -144,
+        512
+      ],
+      "id": "bb219035-241c-4c1a-aba8-0dc8dc7e74a8"
+    },
+    {
+      "parameters": {
+        "amount": 3,
+        "unit": "hours"
+      },
+      "name": "T3: Wait 3 Hours (Post-Job)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        80,
+        512
+      ],
+      "id": "03df8501-c598-48a4-9eec-987395b724a3",
+      "webhookId": "8aaf28af-b51d-4496-8442-5da967ddd141"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telnyx.com/v2/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_TELNYX_API_KEY"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"from\": \"+15551234567\",\n  \"to\": \"{{ $('Payload Normalizer').item.json.caller_phone }}\",\n  \"text\": \"Thank you for choosing us! Please help our small business by leaving an honest 5-star review: https://g.page/r/your-review-link\"\n}",
+        "options": {}
+      },
+      "name": "T3: Timed Review SMS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        304,
+        512
+      ],
+      "id": "e6460378-229b-4a35-b32c-174dddf3b7bf"
+    },
+    {
+      "parameters": {
+        "calendar": "primary",
+        "start": "={{ $json.requested_time }}",
+        "end": "={{ new Date(new Date($json.requested_time).getTime() + 3600000).toISOString() }}",
+        "additionalFields": {
+          "description": "=Job ID: {{ $json.job_id }}\nIssue: {{ $json.issue_description }}",
+          "location": "={{ $json.service_address }}",
+          "summary": "=[Autopilot] - {{ $json.caller_name }}"
+        }
+      },
+      "name": "T4: Realtime GCal Lock",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.1,
+      "position": [
+        -144,
+        704
+      ],
+      "id": "54a03e60-6834-4fec-b4ac-1f938bdef080"
+    },
+    {
+      "parameters": {
+        "chatId": "-1001234567890",
+        "text": "=⚡ *AUTOPILOT FIELD DISPATCH*\n\n🆔 *Job:* `{{ $('Payload Normalizer').item.json.job_id }}`\n👤 *Client:* {{ $('Payload Normalizer').item.json.caller_name }}\n📞 *Phone:* {{ $('Payload Normalizer').item.json.caller_phone }}\n📍 *Address:* {{ $('Payload Normalizer').item.json.service_address }}\n🔧 *Issue:* {{ $('Payload Normalizer').item.json.issue_description }}\n\n_Tap below once job is finished to safely trigger review._",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "📍 Open in Google Maps",
+                    "additionalFields": {}
+                  },
+                  {
+                    "text": "✅ Mark Completed",
+                    "additionalFields": {}
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {}
+      },
+      "name": "T4: Moltbot Interactive Card",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [
+        80,
+        704
+      ],
+      "id": "62691f12-7128-4277-8f73-d3649bde5c54",
+      "webhookId": "5ce1487b-c8c3-4b99-8e13-f5baac7da579",
+      "credentials": {
+        "telegramApi": {
+          "id": "EOmamPcJKNx5kaIY",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "api/v1/job/callback",
+        "options": {}
+      },
+      "name": "T4: Tech Callback Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -144,
+        864
+      ],
+      "id": "ef5e7f19-a331-4255-8a9c-37a946875bc9",
+      "webhookId": "c8642352-3184-4d54-b8e1-7c79e1355571"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE leads SET status = 'verified_complete' WHERE job_id = '{{ $json.body.job_id || \"JOB_123456\" }}';",
+        "options": {}
+      },
+      "name": "T4: Update State in DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        80,
+        864
+      ],
+      "id": "041db1b5-7d19-4e05-bc4a-7392366c07eb",
+      "credentials": {
+        "postgres": {
+          "id": "13YIMb1HnAA2o7El",
+          "name": "Postgres account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telnyx.com/v2/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_TELNYX_API_KEY"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"from\": \"+15551234567\",\n  \"to\": \"{{ $json.body.customer_phone || '+15550199283' }}\",\n  \"text\": \"Thank you! Our technician just completed your repair. If you are satisfied with our service, please leave us a 5-star review: https://g.page/r/your-review-link\"\n}",
+        "options": {}
+      },
+      "name": "T4: Protected Review SMS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        304,
+        864
+      ],
+      "id": "bb6315a3-4400-4a5f-bdb2-6e64748e78ae"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Inbound Webhook": {
+      "main": [
+        [
+          {
+            "node": "Payload Normalizer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Payload Normalizer": {
+      "main": [
+        [
+          {
+            "node": "Tier Switcher",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "T1: Save Lead to DB": {
+      "main": [
+        [
+          {
+            "node": "T1: Owner Telegram Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "T2: GCal FreeBusy Check": {
+      "main": [
+        [
+          {
+            "node": "T2: Lock Calendar Slot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "T2: Lock Calendar Slot": {
+      "main": [
+        [
+          {
+            "node": "T2: Confirmation SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "T2: Confirmation SMS": {
+      "main": [
+        [
+          {
+            "node": "T2: Tech Dispatch Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "T3: GCal Booking": {
+      "main": [
+        [
+          {
+            "node": "T3: Wait 3 Hours (Post-Job)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "T3: Wait 3 Hours (Post-Job)": {
+      "main": [
+        [
+          {
+            "node": "T3: Timed Review SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "T4: Realtime GCal Lock": {
+      "main": [
+        [
+          {
+            "node": "T4: Moltbot Interactive Card",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "T4: Tech Callback Webhook": {
+      "main": [
+        [
+          {
+            "node": "T4: Update State in DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "T4: Update State in DB": {
+      "main": [
+        [
+          {
+            "node": "T4: Protected Review SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "ecad63bd-a594-4179-b86f-05aa9aa469ec",
+  "meta": {
+    "instanceId": "3d406e22c6ad24c9467a52b5520c2503a04cc3e4ce5aa36105b5912279d685aa"
+  },
+  "nodeGroups": [],
+  "id": "M68L98g4j21D3Usi",
+  "tags": []
+}
